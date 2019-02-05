@@ -17,10 +17,16 @@ class DummyConnection(object):
         self.kwargs = kwargs
         self.pid = os.getpid()
 
+    def connect(self):
+        pass
+
+    def is_ready_for_command(self):
+        return True
+
 
 class TestConnectionPool(object):
     def get_pool(self, connection_kwargs=None, max_connections=None,
-                 connection_class=DummyConnection):
+                 connection_class=redis.Connection):
         connection_kwargs = connection_kwargs or {}
         pool = redis.ConnectionPool(
             connection_class=connection_class,
@@ -30,7 +36,8 @@ class TestConnectionPool(object):
 
     def test_connection_creation(self):
         connection_kwargs = {'foo': 'bar', 'biz': 'baz'}
-        pool = self.get_pool(connection_kwargs=connection_kwargs)
+        pool = self.get_pool(connection_kwargs=connection_kwargs,
+                             connection_class=DummyConnection)
         connection = pool.get_connection('_')
         assert isinstance(connection, DummyConnection)
         assert connection.kwargs == connection_kwargs
@@ -305,14 +312,20 @@ class TestSSLConnectionURLParsing(object):
     @pytest.mark.skipif(not ssl_available, reason="SSL not installed")
     def test_cert_reqs_options(self):
         import ssl
-        pool = redis.ConnectionPool.from_url('rediss://?ssl_cert_reqs=none')
+
+        class DummyConnectionPool(redis.ConnectionPool):
+            def get_connection(self, *args, **kwargs):
+                return self.make_connection()
+
+        pool = DummyConnectionPool.from_url(
+            'rediss://?ssl_cert_reqs=none')
         assert pool.get_connection('_').cert_reqs == ssl.CERT_NONE
 
-        pool = redis.ConnectionPool.from_url(
+        pool = DummyConnectionPool.from_url(
             'rediss://?ssl_cert_reqs=optional')
         assert pool.get_connection('_').cert_reqs == ssl.CERT_OPTIONAL
 
-        pool = redis.ConnectionPool.from_url(
+        pool = DummyConnectionPool.from_url(
             'rediss://?ssl_cert_reqs=required')
         assert pool.get_connection('_').cert_reqs == ssl.CERT_REQUIRED
 

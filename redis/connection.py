@@ -29,6 +29,7 @@ from redis.exceptions import (
     ExecAbortError,
     ReadOnlyError
 )
+from redis.selector import DefaultSelector
 from redis.utils import HIREDIS_AVAILABLE
 if HIREDIS_AVAILABLE:
     import hiredis
@@ -436,6 +437,7 @@ class Connection(object):
             raise ConnectionError(self._error_message(e))
 
         self._sock = sock
+        self._selector = DefaultSelector(sock)
         try:
             self.on_connect()
         except RedisError:
@@ -561,7 +563,11 @@ class Connection(object):
         if not sock:
             self.connect()
             sock = self._sock
-        return bool(select([sock], [], [], 0)[0]) or self._parser.can_read()
+        return self._parser.can_read() or self._selector.can_read()
+
+    def is_ready_for_command(self):
+        "Check if the connection is ready for a command"
+        return self._selector.is_ready_for_command()
 
     def read_response(self):
         "Read the response from a previously sent command"
@@ -873,6 +879,23 @@ class ConnectionPool(object):
         except IndexError:
             connection = self.make_connection()
         self._in_use_connections.add(connection)
+        try:
+            # ensure this connection is connected to Redis
+            connection.connect()
+            # connections that the pool provides should be ready to send
+            # a command. if not, the connection was either returned to the
+            # pool before all data has been read or the socket has been
+            # closed. either way, reconnect and verify everything is good.
+            if not connection.is_ready_for_command():
+                connection.disconnect()
+                connection.connect()
+                if not connection.is_ready_for_command():
+                    raise ConnectionError('Connection not ready')
+        except:  # noqa: E722
+            # release the connection back to the pool so that we don't leak it
+            self.release(connection)
+            raise
+
         return connection
 
     def make_connection(self):
@@ -993,6 +1016,23 @@ class BlockingConnectionPool(ConnectionPool):
         # a new connection to add to the pool.
         if connection is None:
             connection = self.make_connection()
+
+        try:
+            # ensure this connection is connected to Redis
+            connection.connect()
+            # connections that the pool provides should be ready to send
+            # a command. if not, the connection was either returned to the
+            # pool before all data has been read or the socket has been
+            # closed. either way, reconnect and verify everything is good.
+            if not connection.is_ready_for_command():
+                connection.disconnect()
+                connection.connect()
+                if not connection.is_ready_for_command():
+                    raise ConnectionError('Connection not ready')
+        except:  # noqa: E722
+            # release the connection back to the pool so that we don't leak it
+            self.release(connection)
+            raise
 
         return connection
 
